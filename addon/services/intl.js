@@ -16,6 +16,8 @@ import normalizeLocale from '../-private/utils/normalize-locale';
 import getDOM from '../-private/utils/get-dom';
 import hydrate from '../-private/utils/hydrate';
 import TranslationContainer from '../-private/store/container';
+import memoize from 'fast-memoize';
+import { createIntl, createIntlCache, IntlErrorCode } from '@formatjs/intl';
 
 export default Service.extend(Evented, {
   /** @public **/
@@ -85,6 +87,10 @@ export default Service.extend(Evented, {
   /** @private **/
   _formatters: null,
 
+  _intls: null,
+
+  _cache: createIntlCache(),
+
   /** @public **/
   init() {
     this._super(...arguments);
@@ -102,12 +108,33 @@ export default Service.extend(Evented, {
       this.formats = this._owner.resolveRegistration('formats:main') || {};
     }
 
+    this.onIntlError = this.onIntlError.bind(this);
+    this.getIntl = this.getIntl.bind(this);
+    this.createIntl = memoize((locale, formats) => {
+      return createIntl(
+        {
+          locale,
+          defaultLocale: locale,
+          formats,
+          defaultFormats: formats,
+          onError: this.onIntlError,
+        },
+        this._cache
+      );
+    });
+
     hydrate(this);
   },
 
   willDestroy() {
     this._super(...arguments);
     cancel(this._timer);
+  },
+
+  onIntlError(err) {
+    if (err.code !== IntlErrorCode.MISSING_TRANSLATION) {
+      throw err;
+    }
   },
 
   /** @private **/
@@ -129,6 +156,13 @@ export default Service.extend(Evented, {
     }
 
     return translation;
+  },
+
+  /**
+   * @private
+   */
+  getIntl(locale) {
+    return this.createIntl(Array.isArray(locale) ? locale[0] : locale, this.formats);
   },
 
   /** @private **/
@@ -202,6 +236,11 @@ export default Service.extend(Evented, {
 
   /** @public */
   setLocale(locale) {
+    assert(
+      `[ember-intl] no locale has been set!  See: https://ember-intl.github.io/ember-intl/docs/quickstart#4-configure-ember-intl`,
+      locale
+    );
+
     set(this, 'locale', locale);
   },
 
@@ -244,8 +283,7 @@ export default Service.extend(Evented, {
   /** @private */
   _createFormatters() {
     const formatterConfig = {
-      onError: this.onError.bind(this),
-      readFormatConfig: () => this.formats,
+      getIntl: (locale) => this.getIntl(locale),
     };
 
     return {
