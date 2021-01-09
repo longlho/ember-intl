@@ -15,9 +15,9 @@ import isArrayEqual from '../-private/utils/is-array-equal';
 import normalizeLocale from '../-private/utils/normalize-locale';
 import getDOM from '../-private/utils/get-dom';
 import hydrate from '../-private/utils/hydrate';
-import TranslationContainer from '../-private/store/container';
 import memoize from 'fast-memoize';
 import { createIntl, createIntlCache, IntlErrorCode } from '@formatjs/intl';
+import flatten, { NestedStructure } from 'ember-intl/-private/utils/flatten';
 
 export default Service.extend(Evented, {
   /** @public **/
@@ -29,7 +29,9 @@ export default Service.extend(Evented, {
    * @property locales
    * @public
    */
-  locales: computed.readOnly('_translationContainer.locales'),
+  locales: computed('_messagesMap', function () {
+    return Object.keys(get(this, '_messagesMap'));
+  }),
 
   /** @public **/
   locale: computed('_locale', {
@@ -75,8 +77,11 @@ export default Service.extend(Evented, {
   /** @public **/
   formatDate: createFormatterProxy('date'),
 
-  /** @private **/
-  _translationContainer: null,
+  /**
+   * @type {Record<string, Record<string, string>>}
+   * @private
+   */
+  _messagesMap: {},
 
   /** @private **/
   _locale: null,
@@ -99,9 +104,6 @@ export default Service.extend(Evented, {
 
     this.setLocale(initialLocale);
     this._owner = getOwner(this);
-    // Below issue can be ignored, as this is during the `init()` constructor.
-    // eslint-disable-next-line ember/no-assignment-of-untracked-properties-used-in-tracking-contexts
-    this._translationContainer = TranslationContainer.create();
     this._formatters = this._createFormatters();
 
     if (!this.formats) {
@@ -118,6 +120,7 @@ export default Service.extend(Evented, {
           formats,
           defaultFormats: formats,
           onError: this.onIntlError,
+          messages: this._messagesMap[locale],
         },
         this._cache
       );
@@ -145,17 +148,15 @@ export default Service.extend(Evented, {
   /** @public **/
   lookup(key, localeName) {
     const localeNames = this._localeWithDefault(localeName);
-    let translation;
 
     for (let i = 0; i < localeNames.length; i++) {
-      translation = this._translationContainer.lookup(localeNames[i], key);
+      const messages = this._messagesMap[localeNames[i]] || {};
+      const translation = messages[key];
 
       if (translation !== undefined) {
-        break;
+        return translation;
       }
     }
-
-    return translation;
   },
 
   /**
@@ -163,28 +164,6 @@ export default Service.extend(Evented, {
    */
   getIntl(locale) {
     return this.createIntl(Array.isArray(locale) ? locale[0] : locale, this.formats);
-  },
-
-  /** @private **/
-  lookupAst(key, localeName, options = {}) {
-    const localeNames = this._localeWithDefault(localeName);
-    let translation;
-
-    for (let i = 0; i < localeNames.length; i++) {
-      translation = this._translationContainer.lookupAst(localeNames[i], key);
-
-      if (translation !== undefined) {
-        break;
-      }
-    }
-
-    if (translation === undefined && options.resilient !== true) {
-      const missingMessage = this._owner.resolveRegistration('util:intl/missing-message');
-
-      return missingMessage.call(this, key, localeNames, options);
-    }
-
-    return translation;
   },
 
   validateKeys(keys) {
@@ -198,31 +177,7 @@ export default Service.extend(Evented, {
 
   /** @public **/
   t(key, options = {}) {
-    let keys = [key];
-
-    if (options.default) {
-      if (Array.isArray(options.default)) {
-        keys = [...keys, ...options.default];
-      } else if (typeof options.default === 'string') {
-        keys = [...keys, options.default];
-      }
-    }
-
-    this.validateKeys(keys);
-
-    for (let index = 0; index < keys.length; index++) {
-      const key = keys[index];
-      const ast = this.lookupAst(key, options.locale, {
-        ...options,
-        // Note: last iteration will throw with the last key that was missing
-        // in the future maybe the thrown error should include all the keys to help debugging
-        resilient: keys.length - 1 !== index,
-      });
-
-      if (ast) {
-        return this.formatMessage(ast, options);
-      }
-    }
+    return this.formatMessage({ id: key }, options);
   },
 
   /** @public **/
@@ -231,7 +186,7 @@ export default Service.extend(Evented, {
 
     assert(`[ember-intl] locale is unset, cannot lookup '${key}'`, Array.isArray(localeNames) && localeNames.length);
 
-    return localeNames.some((localeName) => this._translationContainer.has(localeName, key));
+    return localeNames.some((localeName) => (this._messagesMap[localeName] || {})[key]);
   },
 
   /** @public */
@@ -244,14 +199,22 @@ export default Service.extend(Evented, {
     set(this, 'locale', locale);
   },
 
-  /** @public **/
+  /**
+   * @public
+   * @param {string} localeName
+   * @param {Record<string, string>} payload
+   */
   addTranslations(localeName, payload) {
-    this._translationContainer.push(normalizeLocale(localeName), payload);
+    this._messagesMap[normalizeLocale(localeName)] = flatten(payload);
   },
 
-  /** @public **/
+  /**
+   * @public
+   * @param {string} localeName
+   * @returns {Record<string, string>}
+   */
   translationsFor(localeName) {
-    return this._translationContainer.findTranslationModel(normalizeLocale(localeName), false);
+    return this._messagesMap[normalizeLocale(localeName)];
   },
 
   /** @private **/
